@@ -188,6 +188,7 @@ router.get('/', async (req, res) => {
           name: listing.category.name,
           slug: listing.category.slug
         } : null,
+        viewCount: listing.viewCount || 0,
         createdAt: listing.createdAt,
         distance: null
       };
@@ -278,6 +279,7 @@ router.get('/featured', async (req, res) => {
         name: listing.category.name,
         slug: listing.category.slug
       } : null,
+      viewCount: listing.viewCount || 0,
       createdAt: listing.createdAt
     }));
 
@@ -319,9 +321,10 @@ router.get('/featured', async (req, res) => {
         category: listing.category ? {
           _id: listing.category._id,
           name: listing.category.name,
-          slug: listing.category.slug
-        } : null,
-        createdAt: listing.createdAt
+        slug: listing.category.slug
+      } : null,
+      viewCount: listing.viewCount || 0,
+      createdAt: listing.createdAt
       }));
       
       return res.json(fallbackListings);
@@ -376,12 +379,101 @@ router.get('/latest', async (req, res) => {
         name: listing.category.name,
         slug: listing.category.slug
       } : null,
+      viewCount: listing.viewCount || 0,
       createdAt: listing.createdAt
     }));
 
     res.json(formattedListings);
   } catch (error) {
     console.error('Get latest listings error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Track view for a listing (unique views per user/device)
+router.post('/:id/view', async (req, res) => {
+  try {
+    const listingId = req.params.id;
+    const listing = await Listing.findById(listingId);
+    
+    if (!listing) {
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+
+    const View = require('../models/View');
+    
+    // Get user ID if authenticated
+    let userId = null;
+    try {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      if (token) {
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        userId = decoded.userId;
+      }
+    } catch (error) {
+      // Not authenticated, continue as guest
+    }
+
+    // Get or generate device token for guest users
+    let deviceToken = req.cookies?.deviceToken || req.body?.deviceToken;
+    if (!deviceToken && !userId) {
+      // Generate a unique device token
+      const crypto = require('crypto');
+      deviceToken = crypto.randomBytes(16).toString('hex');
+      // Set cookie for future requests (expires in 1 year)
+      res.cookie('deviceToken', deviceToken, { 
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+        httpOnly: false, // Allow client-side access
+        sameSite: 'lax'
+      });
+    }
+
+    // Get IP address and user agent
+    const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0];
+    const userAgent = req.headers['user-agent'];
+
+    // Check if view already exists
+    let existingView = null;
+    if (userId) {
+      // Check for existing view by user
+      existingView = await View.findOne({ listing: listingId, user: userId });
+    } else if (deviceToken) {
+      // Check for existing view by device token
+      existingView = await View.findOne({ listing: listingId, deviceToken: deviceToken });
+    }
+
+    // If view already exists, return current count without incrementing
+    if (existingView) {
+      return res.json({ 
+        success: true, 
+        viewCount: listing.viewCount || 0,
+        message: 'View already recorded',
+        deviceToken: deviceToken
+      });
+    }
+
+    // Create new view record
+    const view = new View({
+      listing: listingId,
+      user: userId || null,
+      deviceToken: userId ? null : deviceToken, // Only use deviceToken for guests
+      ipAddress,
+      userAgent
+    });
+    await view.save();
+
+    // Increment view count on listing
+    listing.viewCount = (listing.viewCount || 0) + 1;
+    await listing.save();
+
+    res.json({ 
+      success: true, 
+      viewCount: listing.viewCount,
+      deviceToken: deviceToken // Return device token for client to store
+    });
+  } catch (error) {
+    console.error('Track view error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -432,6 +524,7 @@ router.get('/:id', async (req, res) => {
         name: listing.category.name,
         slug: listing.category.slug
       } : null,
+      viewCount: listing.viewCount || 0,
       createdAt: listing.createdAt
     };
 
@@ -661,6 +754,7 @@ router.get('/user/my-listings', authenticateToken, async (req, res) => {
         name: listing.category.name,
         slug: listing.category.slug
       } : null,
+      viewCount: listing.viewCount || 0,
       createdAt: listing.createdAt
     }));
 
@@ -843,6 +937,7 @@ router.put('/:id', authenticateToken, (req, res, next) => {
         name: listing.category.name,
         slug: listing.category.slug
       } : null,
+      viewCount: listing.viewCount || 0,
       createdAt: listing.createdAt,
       updatedAt: listing.updatedAt
     };

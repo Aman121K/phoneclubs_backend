@@ -116,6 +116,11 @@ const listingSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  viewCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   createdAt: {
     type: Date,
     default: Date.now
